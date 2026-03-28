@@ -7,8 +7,8 @@
 ╚██████╔╝╚███╔███╔╝██║  ██║██████╔╝██║  ██║██████╔╝╚██████╔╝   ██║
  ╚═════╝  ╚══╝╚══╝ ╚═╝  ╚═╝╚═════╝ ╚═╝  ╚═╝╚═════╝  ╚═════╝   ╚═╝
 
-GwadaBot v2.0 — Import BD TOPO® IGN → OSM (Guadeloupe 971)
-Multi-millésimes, 14 couches, conflation, comparaison temporelle.
+GwadaBot v2.1 — Import BD TOPO IGN -> OSM (Guadeloupe 971)
+Intègre les retours communautaires (bibi, benoitdd — mars 2026).
 """
 from __future__ import annotations
 import os, sys, time, json, logging, argparse, re
@@ -48,15 +48,21 @@ CHANGESET_TAGS = {
     "comment": "GwadaBot -- Import Guadeloupe depuis BD TOPO IGN",
     "source": "IGN BD TOPO -- Licence Ouverte Etalab 2.0",
     "bot": "yes", "import": "yes",
-    "created_by": "GwadaBot/2.0",
+    "created_by": "GwadaBot/2.1",
     "url": "https://wiki.openstreetmap.org/wiki/Import/GwadaBot",
 }
 
-# ── Mappings complets ─────────────────────────────
+# ── Mappings (intègre retours bibi + benoitdd) ────
+
+# BATI : Religieux retiré du map — traité à part dans le convertisseur
 USAGE1_BATI_MAP = {
-    "Résidentiel": "residential", "Annexe": "yes", "Agricole": "farm",
-    "Commercial et services": "commercial", "Industriel": "industrial",
-    "Sportif": "sports", "Religieux": "church", "Indifférencié": "yes",
+    "Résidentiel": "residential",
+    "Annexe": "yes",
+    "Agricole": "farm",
+    "Commercial et services": "commercial",
+    "Industriel": "industrial",
+    "Sportif": "sports",
+    "Indifférencié": "yes",
 }
 NATURE_BATI_MAP = {
     "Bâtiment indifférencié": {"building": "yes"},
@@ -71,19 +77,29 @@ NATURE_BATI_MAP = {
     "Tour, donjon, moulin": {"building": "tower", "man_made": "tower"},
     "Fort, blockhaus, casemate": {"building": "bunker", "historic": "fort"},
 }
+
+# ROUTES : Bretelle=trunk_link, Route 2 chaussées=primary (retour bibi)
 NATURE_ROUTE_MAP = {
-    "Autoroute": {"highway": "motorway"}, "Quasi-autoroute": {"highway": "trunk"},
-    "Bretelle": {"highway": "motorway_link"}, "Route à 2 chaussées": {"highway": "trunk"},
+    "Autoroute": {"highway": "motorway"},
+    "Quasi-autoroute": {"highway": "trunk"},
+    "Bretelle": {"highway": "trunk_link"},
+    "Route à 2 chaussées": {"highway": "primary"},
     "Route à 1 chaussée": {"highway": "secondary"},
     "Route empierrée": {"highway": "unclassified", "surface": "unpaved"},
-    "Chemin": {"highway": "track"}, "Sentier": {"highway": "path"},
-    "Piste cyclable": {"highway": "cycleway"}, "Escalier": {"highway": "steps"},
+    "Chemin": {"highway": "track"},
+    "Sentier": {"highway": "path"},
+    "Piste cyclable": {"highway": "cycleway"},
+    "Escalier": {"highway": "steps"},
     "Rond-point": {"junction": "roundabout"},
 }
+
 NATURE_HYDRO_MAP = {
-    "Cours d'eau": {"waterway": "river"}, "Canal": {"waterway": "canal"},
-    "Fossé": {"waterway": "ditch"}, "Ravine": {"waterway": "stream", "note": "ravine"},
-    "Ruisseau": {"waterway": "stream"}, "Delta": {"waterway": "river"},
+    "Cours d'eau": {"waterway": "river"},
+    "Canal": {"waterway": "canal"},
+    "Fossé": {"waterway": "ditch"},
+    "Ravine": {"waterway": "stream", "note": "ravine"},
+    "Ruisseau": {"waterway": "stream"},
+    "Delta": {"waterway": "river"},
 }
 NATURE_PLAN_EAU_MAP = {
     "Lac": {"natural": "water", "water": "lake"},
@@ -107,6 +123,8 @@ NATURE_SPORT_MAP = {
     "Pas de tir": {"leisure": "pitch", "sport": "shooting"},
     "Terrain de boules": {"leisure": "pitch", "sport": "boules"},
 }
+
+# VEGETATION : bananeraie = orchard+trees (pas crop), retour bibi
 NATURE_VEGETATION_MAP = {
     "Forêt fermée de feuillus": {"natural": "wood", "leaf_type": "broadleaved"},
     "Forêt fermée de conifères": {"natural": "wood", "leaf_type": "needleleaved"},
@@ -124,7 +142,7 @@ NATURE_VEGETATION_MAP = {
     "Pépinière": {"landuse": "plant_nursery"},
     "Zone arborée": {"natural": "wood"},
     "Forêt fermée sans couvert arboré": {"natural": "wood"},
-    # Clés lowercase pour BD TOPO v3.5 qui utilise parfois des minuscules
+    # Lowercase pour BD TOPO v3.5
     "forêt fermée de feuillus": {"natural": "wood", "leaf_type": "broadleaved"},
     "mangrove": {"natural": "wetland", "wetland": "mangrove"},
     "bananeraie": {"landuse": "orchard", "trees": "banana_plants"},
@@ -165,8 +183,7 @@ THEME_TAG_FILTER = {
     "VEGETATION": "[natural]", "PLAN_EAU": "[natural=water]",
     "PYLONE": "[power=tower]", "LIGNE_ELEC": "[power=line]",
     "AERODROME": "[aeroway]", "RESERVOIR": "[man_made=reservoir]",
-    "CIMETIERE": "[landuse=cemetery]", "EQUIPEMENT": "",
-    "CONSTRUCTION": "",
+    "CIMETIERE": "[landuse=cemetery]", "EQUIPEMENT": "", "CONSTRUCTION": "",
 }
 
 # ══════════════════════════════════════════════════
@@ -257,7 +274,7 @@ def geom_to_features(geom, tags, action="create"):
 # ══════════════════════════════════════════════════
 #  MULTI-MILLÉSIMES
 # ══════════════════════════════════════════════════
-def find_all_millesimes(search_root: Path) -> list[tuple[str, Path]]:
+def find_all_millesimes(search_root):
     results = []
     for bd_dir in sorted(search_root.glob("BDTOPO_*D971*")):
         gpkg_files = sorted(bd_dir.rglob("*.gpkg"))
@@ -271,10 +288,8 @@ def find_all_millesimes(search_root: Path) -> list[tuple[str, Path]]:
 def find_bdtopo_data(theme, search_root=None, millesime=None):
     roots = [r for r in [search_root, PROJECT_ROOT] if r and r.exists()]
     all_m = []
-    for root in roots:
-        all_m.extend(find_all_millesimes(root))
-    if not all_m:
-        raise FileNotFoundError(f"Aucun .gpkg BD TOPO pour {theme}.")
+    for root in roots: all_m.extend(find_all_millesimes(root))
+    if not all_m: raise FileNotFoundError(f"Aucun .gpkg BD TOPO pour {theme}.")
     if millesime:
         matches = [p for d, p in all_m if millesime in d]
         if matches: return matches[0]
@@ -282,53 +297,64 @@ def find_bdtopo_data(theme, search_root=None, millesime=None):
     return all_m[-1][1]
 
 # ══════════════════════════════════════════════════
-#  UTILITAIRE : chercher un champ dans la row
+#  UTILITAIRES CHAMPS
 # ══════════════════════════════════════════════════
 def _get(row, *keys):
-    """Cherche la première clé non-vide parmi plusieurs noms possibles."""
     for k in keys:
         v = row.get(k)
         if v is not None:
             s = str(v).strip()
-            if s not in ("", "None", "nan", "NaN", "<NA>", "NaT"):
-                return s
+            if s not in ("", "None", "nan", "NaN", "<NA>", "NaT"): return s
     return None
 
 def _getf(row, *keys):
     v = _get(row, *keys)
     if v is None: return None
     try:
-        f = float(v)
-        return f if f > 0 else None
+        f = float(v); return f if f > 0 else None
     except: return None
 
 def _geti(row, *keys):
     v = _get(row, *keys)
     if v is None: return None
     try:
-        i = int(float(v))
-        return i if i > 0 else None
+        i = int(float(v)); return i if i > 0 else None
     except: return None
 
 # ══════════════════════════════════════════════════
-#  CONVERTISSEURS — cherchent TOUTES les variantes de noms de colonnes
+#  CONVERTISSEURS (retours bibi + benoitdd intégrés)
 # ══════════════════════════════════════════════════
 def ign_bati_to_osm(row):
     nature = _get(row, "NATURE", "nature") or ""
     tags = dict(NATURE_BATI_MAP.get(nature, {"building": "yes"}))
 
     usage1 = _get(row, "USAGE1", "usage_1", "USAGE_1") or ""
-    if usage1 and tags.get("building") == "yes":
+
+    # Religieux : place_of_worship + fixme (retour benoitdd + bibi)
+    if usage1 == "Religieux":
+        tags["building"] = "yes"
+        tags["amenity"] = "place_of_worship"
+        tags["fixme"] = "Verifier religion et denomination"
+    elif usage1:
         bt = USAGE1_BATI_MAP.get(usage1)
-        if bt: tags["building"] = bt
+        if bt and tags.get("building") == "yes":
+            tags["building"] = bt
+
+    # Commercial : fixme retail vs bureaux (retour bibi)
+    if usage1 == "Commercial et services":
+        tags["fixme"] = "Verifier si retail (boutiques) ou commercial (bureaux)"
 
     usage2 = _get(row, "USAGE2", "usage_2", "USAGE_2") or ""
     if usage2 and usage2 != usage1:
-        bt2 = USAGE1_BATI_MAP.get(usage2)
-        if bt2 and bt2 != "yes": tags["building:use"] = bt2
+        if usage2 == "Religieux":
+            tags["building:use"] = "religious"
+        else:
+            bt2 = USAGE1_BATI_MAP.get(usage2)
+            if bt2 and bt2 != "yes": tags["building:use"] = bt2
 
     if h := _getf(row, "HAUTEUR", "hauteur"):
         tags["height"] = str(round(h, 1))
+    # NB_ETAGES : IGN inclut le RDC, convention identique a OSM (retour bibi verifie)
     if n := _geti(row, "NB_ETAGES", "nombre_d_etages", "nb_etages"):
         tags["building:levels"] = str(n)
     if nl := _geti(row, "NB_LOGEMENTS", "nombre_de_logements", "nb_logements"):
@@ -356,18 +382,24 @@ def ign_road_to_osm(row):
     ref = _get(row, "NUMERO", "numero", "CODE_ROUTE")
     if ref:
         tags["ref"] = ref
-        if ref.startswith("D") and tags.get("highway") in ("primary","secondary","road"):
+        if ref.startswith("D") and tags.get("highway") in ("primary", "secondary", "road"):
             tags["highway"] = "secondary"
         elif ref.startswith("N"):
             tags["highway"] = "primary"
+
+    # IMPORTANCE pour affiner primary -> trunk (retour bibi)
+    importance = _get(row, "IMPORTANCE", "importance")
+    if importance and importance in ("1", "2") and tags.get("highway") == "primary":
+        tags["highway"] = "trunk"
 
     sens = _get(row, "SENS", "sens_de_circulation")
     if sens == "Sens direct": tags["oneway"] = "yes"
     elif sens == "Sens inverse": tags["oneway"] = "-1"
     elif sens == "Double sens": tags["oneway"] = "no"
 
-    if v := _getf(row, "VITESSE_MOYENNE_VL", "vitesse_moyenne_vl"):
-        tags["maxspeed"] = str(int(v))
+    # VITESSE_MOYENNE_VL : PAS importe comme maxspeed (retour bibi)
+    # C'est la vitesse moyenne observee, pas la limite reglementaire
+
     if w := _getf(row, "LARGEUR_DE_CHAUSSEE", "largeur_de_chaussee"):
         tags["width"] = str(round(w, 1))
     if lanes := _geti(row, "NB_VOIES", "nombre_de_voies", "nb_voies"):
@@ -393,10 +425,8 @@ def ign_hydro_to_osm(row):
     name = _get(row, "NOM_C_EAU", "toponyme", "NOM", "nom")
     if name: tags["name"] = name
     regime = _get(row, "REGIME", "regime")
-    if regime:
-        tags["intermittent"] = "yes" if "intermittent" in regime.lower() else "no"
-    if w := _getf(row, "LARGEUR", "largeur"):
-        tags["width"] = str(round(w, 1))
+    if regime: tags["intermittent"] = "yes" if "intermittent" in regime.lower() else "no"
+    if w := _getf(row, "LARGEUR", "largeur"): tags["width"] = str(round(w, 1))
     tags["source"] = "IGN BD TOPO"
     return tags
 
@@ -431,19 +461,16 @@ def ign_reservoir_to_osm(row):
     nature = _get(row, "NATURE", "nature") or ""
     if "eau" in nature.lower(): tags["content"] = "water"
     if h := _getf(row, "HAUTEUR", "hauteur"): tags["height"] = str(round(h, 1))
-    if vol := _getf(row, "VOLUME", "volume"): tags["volume"] = str(int(vol))
     return tags
 
 def ign_vegetation_to_osm(row):
     nature = _get(row, "NATURE", "nature") or ""
-    # Essayer exact, puis lowercase, puis fallback
     tags = (NATURE_VEGETATION_MAP.get(nature) or
             NATURE_VEGETATION_MAP.get(nature.lower()) or
             {"natural": "wood"})
     tags = dict(tags)
     name = _get(row, "NOM", "toponyme", "nom")
     if name: tags["name"] = name
-    # Essayer aussi le champ TFV (type de formation végétale) présent dans v3.5
     tfv = _get(row, "TFV", "tfv")
     if tfv:
         tfv_map = {
@@ -454,8 +481,7 @@ def ign_vegetation_to_osm(row):
             "Canne à sucre": {"landuse": "farmland", "crop": "sugarcane"},
         }
         extra = tfv_map.get(tfv) or tfv_map.get(tfv.lower() if tfv else "")
-        if extra:
-            tags.update(extra)
+        if extra: tags.update(extra)
     tags["source"] = "IGN BD TOPO"
     return tags
 
@@ -482,10 +508,7 @@ def ign_aerodrome_to_osm(row):
 
 def ign_equipement_to_osm(row):
     nature = _get(row, "NATURE", "nature") or ""
-    # Essayer le mapping, puis essayer avec strip d'accents approximatif
     tags = dict(NATURE_EQUIP_MAP.get(nature, {}))
-
-    # Si pas trouvé, essayer quelques heuristiques
     if not tags:
         nl = nature.lower()
         if "parking" in nl: tags = {"amenity": "parking"}
@@ -500,8 +523,7 @@ def ign_equipement_to_osm(row):
         elif "aire" in nl: tags = {"highway": "rest_area"}
         elif "heliport" in nl or "héliport" in nl: tags = {"aeroway": "heliport"}
         elif "aerogare" in nl or "aérogare" in nl: tags = {"aeroway": "terminal"}
-        else: tags = {"man_made": "yes", "note:fixme": f"equipement_transport:{nature}"}
-
+        else: tags = {"man_made": "yes", "fixme": f"equipement_transport:{nature}"}
     name = _get(row, "NOM", "toponyme", "nom")
     if name: tags["name"] = name
     tags["source"] = "IGN BD TOPO"
@@ -544,7 +566,7 @@ def get_osm_api(dry_run=True):
     if not all([cid,csec,tok]):
         log.error("Credentials manquantes. python scripts/osm_auth.py"); sys.exit(1)
     session = OAuth2Session(client_id=cid, token={"access_token": tok, "token_type": "Bearer"})
-    return osmapi.OsmApi(api=url, session=session, appid="GwadaBot/2.0")
+    return osmapi.OsmApi(api=url, session=session, appid="GwadaBot/2.1")
 
 # ══════════════════════════════════════════════════
 #  CHARGEMENT
@@ -559,7 +581,6 @@ def load_bdtopo_layer(gpkg_path, layer_name):
     t0 = time.time()
     gdf = gpd.read_file(gpkg_path, layer=layer_name)
     log.info(f"  Lecture : {time.time()-t0:.1f}s ({len(gdf):,} lignes)")
-    # Log les colonnes pour debug
     log.debug(f"  Colonnes: {list(gdf.columns)}")
     if gdf.crs and gdf.crs.to_epsg() != 4326:
         t0 = time.time(); gdf = gdf.to_crs(epsg=4326); log.info(f"  Reprojection : {time.time()-t0:.1f}s")
@@ -575,7 +596,6 @@ def compute_stats_fast(gdf, converter_fn):
     type_names = np.array([g.geom_type if g is not None else "None" for g in gdf["geometry"].values])
     unique, counts = np.unique(type_names, return_counts=True)
     type_counts = {str(t): int(c) for t, c in zip(unique, counts)}
-
     sample_size = min(2000, len(gdf))
     idx = np.random.RandomState(42).choice(len(gdf), sample_size, replace=False)
     sc = 0
@@ -590,9 +610,8 @@ def compute_stats_fast(gdf, converter_fn):
             else: sc += 1
         except: pass
     total_coords = int(sc * len(gdf) / sample_size)
-
     tag_idx = np.random.RandomState(42).choice(len(gdf), min(1000, len(gdf)), replace=False)
-    tv: dict[str, Counter] = {}
+    tv = {}
     for i in tag_idx:
         for k, v in converter_fn(gdf.iloc[int(i)]).items():
             tv.setdefault(k, Counter())[str(v)] += 1
@@ -603,19 +622,14 @@ def compute_stats_fast(gdf, converter_fn):
             "estimated_nodes": total_coords, "estimated_ways": n_ways, "tag_distribution": top}
 
 # ══════════════════════════════════════════════════
-#  COMPARAISON ENTRE MILLESIMES
+#  COMPARAISON MILLÉSIMES
 # ══════════════════════════════════════════════════
 def compare_millesimes(search_root, layer_name):
-    """Compare les volumes entre tous les millésimes disponibles."""
     all_m = find_all_millesimes(search_root)
-    if len(all_m) < 2:
-        log.info("Pas assez de millesimes pour comparer.")
-        return
-
+    if len(all_m) < 2: log.info("Pas assez de millesimes."); return
     log.info(f"\n{'='*60}")
-    log.info(f"COMPARAISON MILLESIMES — {layer_name}")
+    log.info(f"COMPARAISON — {layer_name}")
     log.info(f"{'='*60}")
-
     counts = []
     for date_str, gpkg_path in all_m:
         try:
@@ -624,24 +638,19 @@ def compare_millesimes(search_root, layer_name):
             if not matches: counts.append((date_str, 0)); continue
             gdf = gpd.read_file(gpkg_path, layer=matches[0], ignore_geometry=True)
             counts.append((date_str, len(gdf)))
-        except Exception as e:
-            counts.append((date_str, -1))
-            log.debug(f"  {date_str}: erreur {e}")
-
+        except: counts.append((date_str, -1))
     for i, (d, c) in enumerate(counts):
         delta = ""
         if i > 0 and counts[i-1][1] > 0 and c > 0:
             diff = c - counts[i-1][1]
             delta = f"  ({'+' if diff >= 0 else ''}{diff:,})"
         log.info(f"  {d} : {c:>10,} objets{delta}")
-
     if counts:
         first_c = next((c for _, c in counts if c > 0), 0)
         last_c = counts[-1][1]
         if first_c > 0 and last_c > 0:
             total_diff = last_c - first_c
-            log.info(f"\n  Evolution totale : {'+' if total_diff >= 0 else ''}{total_diff:,} "
-                     f"({counts[0][0]} -> {counts[-1][0]})")
+            log.info(f"\n  Total : {'+' if total_diff >= 0 else ''}{total_diff:,} ({counts[0][0]} -> {counts[-1][0]})")
 
 # ══════════════════════════════════════════════════
 #  .OSC
@@ -650,7 +659,7 @@ def _esc(v): return saxutils.escape(str(v))
 
 def generate_osc(features, output_path, cs_id=1):
     parts = ['<?xml version="1.0" encoding="UTF-8"?>',
-             '<osmChange version="0.6" generator="GwadaBot/2.0">']
+             '<osmChange version="0.6" generator="GwadaBot/2.1">']
     nid, wid = -1, -1
     groups = {}
     for f in features: groups.setdefault(f.get("action","create"), []).append(f)
@@ -707,9 +716,7 @@ def run_import(theme, layer_name, converter_fn, dry_run=True, local_data=None,
     gdf = load_bdtopo_layer(gpkg_path, layer_name)
     total = len(gdf)
 
-    # Comparaison entre millésimes
-    if len(all_m) >= 2:
-        compare_millesimes(search_root, layer_name)
+    if len(all_m) >= 2: compare_millesimes(search_root, layer_name)
 
     t0 = time.time()
     stats = compute_stats_fast(gdf, converter_fn)
@@ -733,8 +740,7 @@ def run_import(theme, layer_name, converter_fn, dry_run=True, local_data=None,
             osm_el = load_osm_parallel(BBOX_GUADELOUPE, tag_filter=tf, grid=4, workers=4)
             engine = ConflationEngine.from_overpass(osm_el)
             log.info(f"  Pret : {time.time()-t0:.1f}s ({engine.count:,} el.)")
-        except Exception as exc:
-            log.warning(f"  Impossible : {exc}")
+        except Exception as exc: log.warning(f"  Impossible : {exc}")
 
     api = get_osm_api(dry_run=dry_run)
     total_batches = (total + BATCH_SIZE - 1) // BATCH_SIZE
@@ -750,7 +756,6 @@ def run_import(theme, layer_name, converter_fn, dry_run=True, local_data=None,
         if batch_num >= max_batches: break
         end = min(start + BATCH_SIZE, total)
         batch = gdf.iloc[start:end]; batch_num += 1
-
         features, skipped = [], 0
         for idx in range(len(batch)):
             row = batch.iloc[idx]; geom = row.geometry
@@ -762,12 +767,10 @@ def run_import(theme, layer_name, converter_fn, dry_run=True, local_data=None,
                 action = r.action
                 if r.merged_tags: tags = r.merged_tags
             features.extend(geom_to_features(geom, tags, action=action))
-
         total_skipped += skipped
         if not features: continue
         total_features += len(features)
         osc_path = theme_dir / f"batch_{batch_num:04d}.osc"
-
         if dry_run:
             n, w = generate_osc(features, osc_path, cs_id=999)
             total_nodes += n; total_ways += w
@@ -779,7 +782,6 @@ def run_import(theme, layer_name, converter_fn, dry_run=True, local_data=None,
                 total_nodes += n; total_ways += w; api.ChangesetClose(cs)
                 log.info(f"  CS#{cs}: {n}n {w}w")
             except Exception as exc: log.error(f"  Erreur: {exc}")
-
         processed += len(batch)
         if not dry_run:
             time.sleep(DELAY_BETWEEN_BATCHES)
@@ -799,7 +801,7 @@ def run_import(theme, layer_name, converter_fn, dry_run=True, local_data=None,
     log.info(f"{'='*60}")
 
 # ══════════════════════════════════════════════════
-#  CLI
+#  CLI — ADMINISTRATIF retire du --all (retour benoitdd)
 # ══════════════════════════════════════════════════
 THEME_CONFIG = {
     "BATI":          ("batiment",              ign_bati_to_osm),
@@ -818,13 +820,17 @@ THEME_CONFIG = {
     "ADMINISTRATIF": ("commune",               ign_admin_to_osm),
 }
 
+# Themes importes en production (ADMINISTRATIF exclu — retour benoitdd)
+IMPORT_THEMES = [t for t in THEME_CONFIG if t != "ADMINISTRATIF"]
+
 def main():
     all_themes = list(THEME_CONFIG.keys())
     parser = argparse.ArgumentParser(
-        description="GwadaBot v2.0 — Import OSM Guadeloupe (BD TOPO multi-millesimes)",
+        description="GwadaBot v2.1 — Import OSM Guadeloupe (BD TOPO)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Themes : {', '.join(all_themes)}
+(--all exclut ADMINISTRATIF, utiliser --theme ADMINISTRATIF explicitement)
 
 Exemples :
   python scripts/gwadabot.py --theme BATI --dry-run
@@ -844,7 +850,7 @@ Exemples :
     parser.add_argument("--production", action="store_true")
     parser.add_argument("--list-layers", action="store_true")
     parser.add_argument("--list-millesimes", action="store_true")
-    parser.add_argument("--compare", type=str, metavar="COUCHE", help="Compare une couche entre millesimes")
+    parser.add_argument("--compare", type=str, metavar="COUCHE")
     parser.add_argument("--conflation", action="store_true")
     parser.add_argument("--sample", type=int, default=DRY_RUN_SAMPLE_BATCHES)
     parser.add_argument("--millesime", type=str)
@@ -860,8 +866,7 @@ Exemples :
         print(); sys.exit(0)
 
     if args.compare:
-        compare_millesimes(search, args.compare)
-        sys.exit(0)
+        compare_millesimes(search, args.compare); sys.exit(0)
 
     if args.list_layers:
         try:
@@ -881,14 +886,13 @@ Exemples :
 
     if args.production:
         log.warning("=" * 60)
-        log.warning("  MODE PRODUCTION — VRAIE CARTE OSM !")
-        log.warning("  As-tu poste sur imports@ et attendu 2 semaines ?")
+        log.warning("  MODE PRODUCTION")
+        log.warning("  Validation communautaire obtenue ?")
         log.warning("=" * 60)
-        resp = input("\nTapez 'GUADELOUPE' : ")
-        if resp.strip() != "GUADELOUPE":
+        if input("\nTapez 'GUADELOUPE' : ").strip() != "GUADELOUPE":
             log.info("Annule."); sys.exit(0)
 
-    themes = all_themes if args.all else [args.theme]
+    themes = IMPORT_THEMES if args.all else [args.theme]
     for theme in themes:
         default_layer, converter = THEME_CONFIG[theme]
         run_import(
